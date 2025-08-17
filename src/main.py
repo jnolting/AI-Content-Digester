@@ -1,13 +1,100 @@
-from .fetchers import fetch_items
-from .summarize import summarize_items
-from .scoring import score_items
-from .utils import write_report
+import os, re, math, datetime, pathlib, json
+from fetchers import fetch_webpage, fetch_pdf, fetch_youtube
+from summarize import chat_complete
+from scoring import recommend_score
+
+def load_prompt(path): return pathlib.Path(path).read_text(encoding="utf-8")
+
+def get_inbox_issues():
+    # GitHub provides GITHUB_REPOSITORY + token; list open issues with label 'inbox'
+    import httpx
+    repo = os.environ["GITHUB_REPOSITORY"]
+    token = os.environ["GITHUB_TOKEN"]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    url = f"https://api.github.com/repos/{repo}/issues?state=open&labels=inbox"
+    r = httpx.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return [i for i in r.json() if "pull_request" not in i]
+
+def close_issue(number, comment):
+    import httpx
+    repo = os.environ["GITHUB_REPOSITORY"]
+    token = os.environ["GITHUB_TOKEN"]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    httpx.post(f"https://api.github.com/repos/{repo}/issues/{number}/comments",
+               headers=headers, json={"body": comment})
+    httpx.patch(f"https://api.github.com/repos/{repo}/issues/{number}",
+                headers=headers, json={"state":"closed"})
+
+def extract_url(issue):
+    body = issue.get("body") or ""
+    m = re.search(r"(https?://\S+)", body)
+    return m.group(1) if m else None
+
+def fetch(url):
+    if url.lower().endswith(".pdf"):
+        return fetch_pdf(url)
+    if "youtube.com" in url or "youtu.be" in url:
+        return fetch_youtube(url)
+    return fetch_webpage(url)
+
+def trim_for_context(text, max_chars=12000):
+    if len(text) <= max_chars: return text
+    # keep intro + most dense middle chunk
+    head, tail = text[:4000], text[-3000:]
+    mid = text[4000:-3000]
+    return head + "\n[...snip...]\n" + mid[:4000] + "\n[...snip...]\n" + tail
 
 def main():
-    items = fetch_items()
-    summaries = summarize_items(items)
-    scored = score_items(summaries)
-    write_report(scored, output_dir="reports")
+    system = load_prompt("prompts/summarize_system.txt")
+    today = datetime.date.today().isoformat()
+    out_path = pathlib.Path(f"reports/{today}.md")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    issues = get_inbox_issues()
+    sections = []
+    for issue in issues:
+        url = extract_url(issue)
+        if not url: continue
+        content, meta = fetch(url)
+        wc = len(content.split())
+        dur = int(meta.get("duration") or 0)
+        user_prompt = load_prompt("prompts/summarize_user.txt").format(
+            title=meta.get("title") or url,
+            kind=meta.get("type"),
+            url=url,
+            duration_human=(f"{dur//60}m{dur%60:02d}s" if dur else "n/a"),
+            word_count=wc if wc else "n/a",
+            content=trim_for_context(content),
+        )
+        summary = chat_complete(system, user_prompt, max_tokens=1100)
+
+        # BEFORE:
+        # score, label = recommend_score(meta.get("type"), wc, dur, meta.get("title"))
+
+        # AFTER:
+        score, label, breakdown = recommend_score(
+            meta.get("type"),
+            wc,
+            dur,
+            url,
+            meta.get("title") or url,
+            interests=[".net", "duende", "oidc", "kubernetes", "rocm", "pytorch", "bambu"]  # tweak to your interests
+        )
+        sections.append(
+            f"## {meta.get('title')}\n**URL:** {url}\n**Recommendation:** {label} (score {score})\n"
+            f"<sub>Scoring: {breakdown}</sub>\n\n{summary}\n"
+        )
+
+        sections.append(f"## {meta.get('title')}\n**URL:** {url}\n**Recommendation:** {label} (score {score})\n\n{summary}\n")
+        close_issue(issue["number"], f"Processed in {today} daily report. Recommendation: **{label}** (score {score}).")
+
+    if not sections:
+        sections.append("_No new links today._")
+
+    report = f"# Daily Content Report — {today}\n\n" + "\n---\n\n".join(sections)
+    out_path.write_text(report, encoding="utf-8")
+    print(f"Wrote {out_path}")
 
 if __name__ == "__main__":
     main()
