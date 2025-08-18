@@ -1,40 +1,82 @@
-import re, subprocess, json, io
-import httpx, trafilatura
-from bs4 import BeautifulSoup
-from pypdf import PdfReader
+import os
+import re
+import requests
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 
-def fetch_webpage(url: str) -> tuple[str, dict]:
-    r = httpx.get(url, timeout=30, follow_redirects=True)
-    r.raise_for_status()
-    downloaded = trafilatura.extract(r.text, include_comments=False, url=url) or ""
-    title = BeautifulSoup(r.text, "html.parser").title.string if "<title" in r.text.lower() else ""
-    meta = {"title": title.strip() if title else url, "type": "article"}
-    return downloaded, meta
+GITHUB_API = "https://api.github.com"
 
-def fetch_pdf(url: str) -> tuple[str, dict]:
-    r = httpx.get(url, timeout=60, follow_redirects=True)
-    r.raise_for_status()
-    buf = io.BytesIO(r.content)
-    reader = PdfReader(buf)
-    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    return text, {"title": url.rsplit("/",1)[-1], "type": "pdf"}
+def _extract_urls(text: str) -> list[str]:
+    if not text:
+        return []
+    # basic URL grabber
+    urls = re.findall(r'https?://\S+', text, flags=re.IGNORECASE)
+    # strip trailing punctuation
+    clean = [u.rstrip(').,;\'"') for u in urls]
+    return clean
 
-def fetch_youtube(url: str) -> tuple[str, dict]:
-    # 1) transcript
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
-        video_id = extract_video_id(url)
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
-        text = " ".join([x["text"] for x in transcript])
-    except Exception:
-        text = ""
-    # 2) metadata via yt-dlp
-    meta_raw = subprocess.check_output(["yt-dlp", "-J", "--", url], text=True)
-    meta = json.loads(meta_raw)
-    duration = int(meta.get("duration") or 0)
-    title = meta.get("title") or url
-    return text, {"title": title, "type": "youtube", "duration": duration}
+def _infer_type(url: str) -> str:
+    host = urlparse(url).netloc.lower()
+    if "youtube.com" in host or "youtu.be" in host:
+        return "youtube"
+    if host.endswith(".pdf") or url.lower().endswith(".pdf"):
+        return "pdf"
+    return "web"
 
-def extract_video_id(url: str) -> str:
-    m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", url)
-    return m.group(1) if m else ""
+def _since_midnight_utc() -> str:
+    now = datetime.now(timezone.utc)
+    midnight = datetime(year=now.year, month=now.month, day=now.day, tzinfo=timezone.utc)
+    return midnight.isoformat()
+
+def fetch_items() -> list[dict]:
+    """
+    Pull links from GitHub Issues updated today (UTC) and return
+    a list of items like:
+      { 'source': <url>, 'type': 'youtube|web|pdf', 'context': <issue title|id> }
+    """
+    repo = os.environ.get("GITHUB_REPOSITORY")  # e.g. jnolting/AI-Content-Digester
+    token = os.environ.get("GITHUB_TOKEN")
+
+    if not repo:
+        print("GITHUB_REPOSITORY not set; returning no items.")
+        return []
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    # Issues updated since midnight UTC
+    params = {
+        "state": "all",
+        "sort": "updated",
+        "direction": "desc",
+        "since": _since_midnight_utc(),
+        "per_page": 100,
+    }
+    url = f"{GITHUB_API}/repos/{repo}/issues"
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    issues = resp.json()
+
+    seen = set()
+    items = []
+    for issue in issues:
+        # Skip pull requests (issues API returns PRs too)
+        if "pull_request" in issue:
+            continue
+
+        title = issue.get("title") or ""
+        body = issue.get("body") or ""
+        urls = _extract_urls(title) + _extract_urls(body)
+
+        for u in urls:
+            if u in seen:
+                continue
+            seen.add(u)
+            items.append({
+                "source": u,
+                "type": _infer_type(u),
+                "context": f"Issue #{issue.get('number')}: {title}",
+            })
+
+    print(f"Fetched {len(items)} link(s) from issues updated since midnight UTC.")
+    return items
