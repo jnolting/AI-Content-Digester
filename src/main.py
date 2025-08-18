@@ -1,7 +1,7 @@
 import os, re, math, datetime, pathlib, json
-from fetchers import fetch_webpage, fetch_pdf, fetch_youtube
-from summarize import chat_complete
-from scoring import recommend_score
+from src.fetchers import fetch_webpage, fetch_pdf, fetch_youtube
+from src.summarize import chat_complete
+from src.scoring import recommend_score
 
 def load_prompt(path): return pathlib.Path(path).read_text(encoding="utf-8")
 
