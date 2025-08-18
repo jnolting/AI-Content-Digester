@@ -27,22 +27,28 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python -m src.main
 
-      - name: Commit report
+      - name: List generated reports (debug)
+        run: |
+          echo "Repo root:" && ls -al
+          echo "Reports dir:" && ls -al reports || true
+
+      - name: Commit report(s)
         run: |
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
-          # add whichever report format you generate:
-          git add reports/*.json || true
-          git add reports/*.md || true
+          git add -f reports/*.json 2>/dev/null || true
+          git add -f reports/*.md   2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "Daily report $(date -u +%F)"
             git push
+          else
+            echo "No report changes to commit."
           fi
 
       - name: Set date
@@ -55,15 +61,15 @@ jobs:
         with:
           server_address: ${{ vars.SMTP_HOST }}   # e.g., smtp.office365.com
           server_port: ${{ vars.SMTP_PORT }}     # e.g., 587
-          secure: false                          # 587 = STARTTLS, not implicit SSL
+          secure: false                          # 587 uses STARTTLS
           starttls: true
           username: ${{ vars.SMTP_USER }}
-          password: ${{ secrets.SMTP_PASS }}     # keep password as a secret
+          password: ${{ secrets.SMTP_PASS }}
           subject: "Daily Content Report — ${{ github.repository }} — ${{ steps.date.outputs.today }}"
-          to: ${{ vars.RECIPIENT_EMAIL }}        # ✅ repo variable
+          to: ${{ vars.RECIPIENT_EMAIL }}        # your repo variable
           from: ${{ vars.SMTP_FROM }}            # should match/alias the SMTP account
+          # Optional: attach all reports
+          # attachments: reports/daily_digest_*.json
           html_body: |
             <p>Your daily report is ready.</p>
             <p>Browse it in the repo: <a href="https://github.com/${{ github.repository }}/tree/main/reports">reports/</a></p>
-
-          
