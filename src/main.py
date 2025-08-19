@@ -69,7 +69,10 @@ def main():
             word_count=wc if wc else "n/a",
             content=trim_for_context(content),
         )
-        summary = chat_complete(system, user_prompt, max_tokens=1100)
+        try:
+            summary = chat_complete(system, user_prompt, max_tokens=1100)
+        except Exception as e:
+            summary = f"_Summary failed: {e}_"
 
         # BEFORE:
         # score, label = recommend_score(meta.get("type"), wc, dur, meta.get("title"))
