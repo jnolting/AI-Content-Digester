@@ -94,7 +94,14 @@ def fetch_webpage(url: str) -> tuple[str, dict]:
     content = ""
     html = None
     try:
-        r = requests.get(url, timeout=45)
+        # Friendly UA to avoid basic bot blocks
+        r = requests.get(
+            url,
+            timeout=45,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            },
+        )
         r.raise_for_status()
         html = r.text
     except Exception as e:
@@ -157,19 +164,44 @@ def fetch_youtube(url: str) -> tuple[str, dict]:
     # transcript
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        parts = YouTubeTranscriptApi.get_transcript(video_id)
-        transcript_text = " ".join(p.get("text", "") for p in parts if p.get("text"))
+        parts = None
+        for langs in (['en', 'en-US'], ['en-GB'], None):
+            try:
+                parts = YouTubeTranscriptApi.get_transcript(video_id, languages=langs) if langs else YouTubeTranscriptApi.get_transcript(video_id)
+                if parts:
+                    break
+            except Exception:
+                continue
+        if parts:
+            transcript_text = " ".join(p.get("text", "") for p in parts if p.get("text"))
     except Exception:
         pass
 
     # metadata (no download)
     try:
         import yt_dlp
-        ydl_opts = {"quiet": True, "skip_download": True}
+        class _SilentLogger:
+            def debug(self, msg):
+                pass
+            def warning(self, msg):
+                pass
+            def error(self, msg):
+                pass
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "ignoreerrors": True,
+            "logger": _SilentLogger(),
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            title = info.get("title") or title
-            duration = int(info.get("duration") or 0)
+            if isinstance(info, dict):
+                title = info.get("title") or title
+                try:
+                    duration = int(info.get("duration") or 0)
+                except Exception:
+                    duration = 0
     except Exception:
         pass
 
