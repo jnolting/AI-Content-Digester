@@ -1,4 +1,4 @@
-import os, re, math, datetime, pathlib, json
+import os, re, math, datetime, pathlib, json, time
 from src.fetchers import fetch_webpage, fetch_pdf, fetch_youtube, _extract_urls
 from src.summarize import chat_complete
 from src.scoring import recommend_score
@@ -53,6 +53,12 @@ def main():
     out_path = pathlib.Path(f"reports/{today}.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Basic rate limiting between items (seconds)
+    try:
+        sleep_between = float(os.getenv("RATE_LIMIT_SLEEP_SECONDS", "2"))
+    except Exception:
+        sleep_between = 2.0
+
     issues = get_inbox_issues()
     sections = []
     for issue in issues:
@@ -91,6 +97,10 @@ def main():
             f"<sub>Scoring: {breakdown}</sub>\n\n{summary}\n"
         )
         close_issue(issue["number"], f"Processed in {today} daily report. Recommendation: **{label}** (score {score}).")
+
+        # Rate limit before next item
+        if sleep_between > 0:
+            time.sleep(sleep_between)
 
     if not sections:
         sections.append("_No new links today._")
