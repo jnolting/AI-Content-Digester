@@ -1,25 +1,28 @@
+# src/fetchers.py
+from __future__ import annotations
 import os
 import re
+import io
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+# -------------------------
+# Your original constants/utilities
+# -------------------------
 GITHUB_API = "https://api.github.com"
 
 def _extract_urls(text: str) -> list[str]:
     if not text:
         return []
-    # basic URL grabber
     urls = re.findall(r'https?://\S+', text, flags=re.IGNORECASE)
-    # strip trailing punctuation
-    clean = [u.rstrip(').,;\'"') for u in urls]
-    return clean
+    return [u.rstrip(').,;\'"') for u in urls]
 
 def _infer_type(url: str) -> str:
     host = urlparse(url).netloc.lower()
     if "youtube.com" in host or "youtu.be" in host:
         return "youtube"
-    if host.endswith(".pdf") or url.lower().endswith(".pdf"):
+    if url.lower().endswith(".pdf"):
         return "pdf"
     return "web"
 
@@ -44,7 +47,6 @@ def fetch_items() -> list[dict]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    # Issues updated since midnight UTC
     params = {
         "state": "all",
         "sort": "updated",
@@ -60,14 +62,11 @@ def fetch_items() -> list[dict]:
     seen = set()
     items = []
     for issue in issues:
-        # Skip pull requests (issues API returns PRs too)
-        if "pull_request" in issue:
+        if "pull_request" in issue:  # skip PRs
             continue
-
         title = issue.get("title") or ""
         body = issue.get("body") or ""
         urls = _extract_urls(title) + _extract_urls(body)
-
         for u in urls:
             if u in seen:
                 continue
@@ -80,3 +79,117 @@ def fetch_items() -> list[dict]:
 
     print(f"Fetched {len(items)} link(s) from issues updated since midnight UTC.")
     return items
+
+# -------------------------
+# Helpers used by main.py
+# -------------------------
+
+def fetch_webpage(url: str) -> tuple[str, dict]:
+    """
+    Returns (content_text, meta) where:
+      meta = {'type': 'web', 'title': str, 'url': url}
+    Uses trafilatura for readable text; falls back to raw HTML on error.
+    """
+    title = url
+    content = ""
+    html = None
+    try:
+        r = requests.get(url, timeout=45)
+        r.raise_for_status()
+        html = r.text
+    except Exception as e:
+        return ("", {"type": "web", "title": title, "url": url, "error": f"http_error: {e}"})
+
+    # extract text
+    try:
+        import trafilatura
+        content = trafilatura.extract(html) or ""
+    except Exception:
+        content = html  # fallback: raw HTML
+
+    # extract title from HTML if possible
+    if html:
+        m = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip() or title
+
+    meta = {"type": "web", "title": title, "url": url}
+    return content.strip(), meta
+
+def fetch_pdf(url: str) -> tuple[str, dict]:
+    """
+    Returns (content_text, meta) where:
+      meta = {'type': 'pdf', 'title': str, 'url': url, 'pages': int}
+    """
+    try:
+        resp = requests.get(url, timeout=120)
+        resp.raise_for_status()
+    except Exception as e:
+        return ("", {"type": "pdf", "title": url.split('/')[-1] or 'PDF', "url": url, "error": f"http_error: {e}"})
+
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(resp.content))
+        texts = []
+        for page in reader.pages:
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception:
+                pass
+        content = "\n\n".join(t for t in texts if t).strip()
+        title = (getattr(reader, "metadata", None) or {}).get("/Title") or url.split("/")[-1] or "PDF"
+        meta = {"type": "pdf", "title": title, "url": url, "pages": len(reader.pages)}
+        return content, meta
+    except Exception as e:
+        return ("", {"type": "pdf", "title": url.split('/')[-1] or 'PDF', "url": url, "error": f"pdf_parse_error: {e}"})
+
+def fetch_youtube(url: str) -> tuple[str, dict]:
+    """
+    Returns (transcript_text_or_empty, meta) where:
+      meta = {'type': 'youtube', 'title': str, 'url': url, 'duration': seconds}
+    Tries transcript first; uses yt-dlp for title/duration.
+    """
+    video_id = _youtube_id(url)
+    transcript_text = ""
+    title = None
+    duration = 0
+
+    # transcript
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        parts = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_text = " ".join(p.get("text", "") for p in parts if p.get("text"))
+    except Exception:
+        pass
+
+    # metadata (no download)
+    try:
+        import yt_dlp
+        ydl_opts = {"quiet": True, "skip_download": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get("title") or title
+            duration = int(info.get("duration") or 0)
+    except Exception:
+        pass
+
+    if not title:
+        title = f"YouTube: {video_id}"
+
+    meta = {"type": "youtube", "title": title, "url": url, "duration": duration}
+    return transcript_text.strip(), meta
+
+def _youtube_id(url: str) -> str:
+    u = urlparse(url)
+    if u.netloc.endswith("youtu.be"):
+        return u.path.lstrip("/")
+    if "youtube.com" in u.netloc:
+        m = re.search(r"[?&]v=([^&]+)", url)
+        if m:
+            return m.group(1)
+        m = re.search(r"/shorts/([^?&/]+)", url)
+        if m:
+            return m.group(1)
+    return u.path.strip("/").split("/")[-1]
+
+
