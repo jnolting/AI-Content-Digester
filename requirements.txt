@@ -7,3 +7,4 @@ pypdf==4.3.1
 youtube-transcript-api==0.6.2
 yt-dlp==2024.08.06
 tiktoken==0.7.0
+requests==2.32.3

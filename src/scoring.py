@@ -15,14 +15,21 @@ from urllib.parse import urlparse
 import json
 import math
 import os
+from pathlib import Path
 
 # Optional: host weights from config/source_weights.json
 def _load_host_weights(path="config/source_weights.json"):
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return {k.lower(): int(v) for k, v in json.load(f).items()}
+        p = Path(path)
+        if not p.exists():
+            # Fallback to GH Actions path
+            p = Path(".github/workflows/config/source_weights.json")
+        if p.exists():
+            with p.open("r", encoding="utf-8") as f:
+                return {k.lower(): int(v) for k, v in json.load(f).items()}
     except Exception:
-        return {}
+        pass
+    return {}
 
 HOST_WEIGHTS = _load_host_weights()
 

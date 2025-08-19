@@ -1,5 +1,5 @@
 import os, re, math, datetime, pathlib, json
-from src.fetchers import fetch_webpage, fetch_pdf, fetch_youtube
+from src.fetchers import fetch_webpage, fetch_pdf, fetch_youtube, _extract_urls
 from src.summarize import chat_complete
 from src.scoring import recommend_score
 
@@ -27,9 +27,11 @@ def close_issue(number, comment):
                 headers=headers, json={"state":"closed"})
 
 def extract_url(issue):
+    # Prefer shared URL parsing across title + body
+    title = issue.get("title") or ""
     body = issue.get("body") or ""
-    m = re.search(r"(https?://\S+)", body)
-    return m.group(1) if m else None
+    urls = _extract_urls(f"{title}\n{body}")
+    return urls[0] if urls else None
 
 def fetch(url):
     if url.lower().endswith(".pdf"):
@@ -85,8 +87,6 @@ def main():
             f"## {meta.get('title')}\n**URL:** {url}\n**Recommendation:** {label} (score {score})\n"
             f"<sub>Scoring: {breakdown}</sub>\n\n{summary}\n"
         )
-
-        sections.append(f"## {meta.get('title')}\n**URL:** {url}\n**Recommendation:** {label} (score {score})\n\n{summary}\n")
         close_issue(issue["number"], f"Processed in {today} daily report. Recommendation: **{label}** (score {score}).")
 
     if not sections:
